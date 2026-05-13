@@ -1,0 +1,103 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: Build a signed IPA for iPhone install
+        required: true
+        type: boolean
+        default: false
+      export_method:
+        description: Apple export method for signed builds
+        required: true
+        type: choice
+        default: ad-hoc
+        options:
+          - development
+          - ad-hoc
+          - app-store
+          - enterprise
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Import Apple signing files
+        if: ${{ inputs.signed }}
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/wilddex_certificate.p12"
+          PROFILE_PATH="$RUNNER_TEMP/wilddex_profile.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/wilddex-signing.keychain-db"
+
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/"
+
+      - name: Apply Apple team id
+        if: ${{ inputs.signed }}
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          if [ -z "$DEVELOPMENT_TEAM" ]; then
+            echo "DEVELOPMENT_TEAM secret is empty; leaving Xcode project team unchanged."
+            exit 0
+          fi
+          ruby -0pi -e 'gsub(/PRODUCT_BUNDLE_IDENTIFIER = com\.yooze\.wilddex;/, "DEVELOPMENT_TEAM = #{ENV["DEVELOPMENT_TEAM"]};\n\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.yooze.wilddex;")' ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Build signed IPA
+        if: ${{ inputs.signed }}
+        run: flutter build ipa --release --export-method ${{ inputs.export_method }}
+
+      - name: Build unsigned iOS app archive
+        if: ${{ !inputs.signed }}
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p build/ios/unsigned
+          ditto -c -k --keepParent build/ios/iphoneos/Runner.app build/ios/unsigned/WildDex-unsigned-Runner.app.zip
+
+      - name: Upload signed IPA
+        if: ${{ inputs.signed }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: WildDex-signed-ipa
+          path: build/ios/ipa/*.ipa
+
+      - name: Upload unsigned app archive
+        if: ${{ !inputs.signed }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: WildDex-unsigned-ios-app
+          path: build/ios/unsigned/WildDex-unsigned-Runner.app.zip

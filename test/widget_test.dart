@@ -152,6 +152,88 @@ void main() {
     expect(decoded?.capture.id, capture.id);
   });
 
+  test('battle package reassembles and simulates deterministically', () {
+    final rabbit = AnimalEntry.fromGeneratedJson({
+      'is_animal': true,
+      'common_name': 'Desert Cottontail',
+      'scientific_name': 'Sylvilagus audubonii',
+      'animal_group': 'Mammal',
+      'taxonomy': {'class': 'Mammalia', 'order': 'Lagomorpha'},
+      'stats': {
+        'Power': 22,
+        'Speed': 80,
+        'Stealth': 70,
+        'Defense': 25,
+        'Intelligence': 45,
+        'Rarity': 30,
+      },
+    });
+    final beetle = AnimalEntry.fromGeneratedJson({
+      'is_animal': true,
+      'common_name': 'Darkling Beetle',
+      'scientific_name': 'Eleodes sp.',
+      'animal_group': 'Insect',
+      'taxonomy': {'class': 'Insecta', 'order': 'Coleoptera'},
+      'stats': {
+        'Power': 36,
+        'Speed': 28,
+        'Stealth': 52,
+        'Defense': 76,
+        'Intelligence': 18,
+        'Rarity': 38,
+      },
+    });
+    final rabbitCapture = CritterCapture(
+      id: 'rabbit-1',
+      speciesKey: rabbit.speciesKey,
+      commonName: rabbit.commonName,
+      scientificName: rabbit.scientificName,
+      label: 'Wild capture',
+      stats: rabbit.stats,
+      capturedAt: DateTime.utc(2026, 5, 13),
+      source: 'local',
+    );
+    final beetleCapture = CritterCapture(
+      id: 'beetle-1',
+      speciesKey: beetle.speciesKey,
+      commonName: beetle.commonName,
+      scientificName: beetle.scientificName,
+      label: 'Wild capture',
+      stats: beetle.stats,
+      capturedAt: DateTime.utc(2026, 5, 13),
+      source: 'local',
+    );
+    final rabbitPackage = BattlePackage(
+      battleId: 'battle-123',
+      entry: rabbit,
+      capture: rabbitCapture,
+    );
+    final beetlePackage = BattlePackage(
+      battleId: 'battle-123',
+      entry: beetle,
+      capture: beetleCapture,
+    );
+    final assembler = BattleQrAssembler();
+    BattlePackage? decoded;
+
+    for (final chunk in beetlePackage.toQrChunks().reversed) {
+      decoded = assembler.addQrData(chunk.toQrData());
+    }
+
+    final first = simulateBattle(
+      ownPackage: rabbitPackage,
+      opponentPackage: decoded!,
+    );
+    final second = simulateBattle(
+      ownPackage: rabbitPackage,
+      opponentPackage: decoded,
+    );
+
+    expect(decoded.battleId, 'battle-123');
+    expect(first.statusLine, second.statusLine);
+    expect(first.events, second.events);
+  });
+
   testWidgets('WildDex renders scanner controls', (WidgetTester tester) async {
     await tester.pumpWidget(const WildDexApp());
     await tester.pump();

@@ -117,6 +117,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _selectedCategory = 'All';
   String? _selectedTradeCaptureId;
   TradePackage? _incomingTrade;
+  String? _selectedBattleCaptureId;
+  String _battleId = '';
+  BattlePackage? _incomingBattle;
+  BattleResult? _battleResult;
   final Set<int> _activePointers = {};
   bool _threeFingerChordActive = false;
   int _threeFingerTapCount = 0;
@@ -504,7 +508,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 final wide = constraints.maxWidth >= 760;
                 if (_selectedSection == 0) return _buildScannerSection(wide);
                 if (_selectedSection == 1) return _buildCollectionSection(wide);
-                return _buildTradeSection(wide);
+                if (_selectedSection == 2) return _buildTradeSection(wide);
+                return _buildBattleSection(wide);
               },
             ),
           ),
@@ -528,6 +533,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: Icon(Icons.qr_code_2_outlined),
                 selectedIcon: Icon(Icons.qr_code_2),
                 label: 'Trade',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.sports_martial_arts_outlined),
+                selectedIcon: Icon(Icons.sports_martial_arts),
+                label: 'Battle',
               ),
             ],
           ),
@@ -668,6 +678,64 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildBattleSection(bool wide) {
+    final battleCaptures = _captures
+        .where((capture) =>
+            _repository.entryForSpecies(capture.speciesKey) != null)
+        .toList()
+      ..sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
+    final selectedCapture = battleCaptures
+        .where((capture) => capture.id == _selectedBattleCaptureId)
+        .firstOrNull;
+    final selectedEntry = selectedCapture == null
+        ? null
+        : _repository.entryForSpecies(selectedCapture.speciesKey);
+    final outgoingPackage = selectedCapture != null &&
+            selectedEntry != null &&
+            _battleId.trim().isNotEmpty
+        ? BattlePackage(
+            battleId: _battleId.trim(),
+            entry: selectedEntry,
+            capture: selectedCapture,
+          )
+        : null;
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: _BattlePanel(
+        captures: battleCaptures,
+        selectedCapture: selectedCapture,
+        battleId: _battleId,
+        outgoingPackage: outgoingPackage,
+        incomingPackage: _incomingBattle,
+        result: _battleResult,
+        onSelected: (capture) {
+          setState(() {
+            _selectedBattleCaptureId = capture?.id;
+            _battleResult = null;
+          });
+        },
+        onBattleIdChanged: (battleId) {
+          setState(() {
+            _battleId = battleId;
+            _incomingBattle = null;
+            _battleResult = null;
+          });
+        },
+        onGenerateBattleId: () {
+          setState(() {
+            _battleId = generateBattleId();
+            _incomingBattle = null;
+            _battleResult = null;
+          });
+        },
+        onScan: _scanBattleQr,
+        onClearIncoming: () => setState(() => _incomingBattle = null),
+        onStartBattle: _startBattle,
+      ),
+    );
+  }
+
   Future<void> _openCapturesSheet(AnimalEntry entry) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -696,6 +764,82 @@ class _HomeScreenState extends State<HomeScreen> {
     if (package != null) {
       setState(() => _incomingTrade = package);
     }
+  }
+
+  Future<void> _scanBattleQr() async {
+    if (_battleId.trim().isEmpty) {
+      setState(() => _status = 'Enter a battle ID first.');
+      return;
+    }
+
+    final package = await Navigator.of(context).push<BattlePackage>(
+      MaterialPageRoute(builder: (_) => const _BattleQrScannerScreen()),
+    );
+    if (package == null) return;
+
+    if (normalizeBattleId(package.battleId) != normalizeBattleId(_battleId)) {
+      setState(() {
+        _incomingBattle = null;
+        _battleResult = null;
+        _status =
+            'Battle ID mismatch. Their code was ${package.battleId}, yours is $_battleId.';
+      });
+      return;
+    }
+
+    setState(() {
+      _incomingBattle = package;
+      _battleResult = null;
+      _status = 'Opponent locked for battle ${package.battleId}.';
+    });
+  }
+
+  Future<void> _startBattle() async {
+    final selectedCapture = _captures
+        .where((capture) => capture.id == _selectedBattleCaptureId)
+        .firstOrNull;
+    final selectedEntry = selectedCapture == null
+        ? null
+        : _repository.entryForSpecies(selectedCapture.speciesKey);
+
+    if (selectedCapture == null || selectedEntry == null) {
+      setState(() => _status = 'Pick one of your captures for battle.');
+      return;
+    }
+    if (_battleId.trim().isEmpty) {
+      setState(() => _status = 'Enter a battle ID first.');
+      return;
+    }
+    if (_incomingBattle == null) {
+      setState(() => _status = 'Scan your opponent battle QR first.');
+      return;
+    }
+
+    final ownPackage = BattlePackage(
+      battleId: _battleId.trim(),
+      entry: selectedEntry,
+      capture: selectedCapture,
+    );
+    final result = simulateBattle(
+      ownPackage: ownPackage,
+      opponentPackage: _incomingBattle!,
+    );
+
+    if (result.ownLost) {
+      await _repository.deleteCapture(selectedCapture.id);
+    } else if (result.stoleOpponent) {
+      await _repository.importBattlePackage(_incomingBattle!);
+    }
+
+    setState(() {
+      _entries = _repository.entries;
+      _captures = _repository.captures;
+      _battleResult = result;
+      if (result.ownLost) {
+        _selectedBattleCaptureId = null;
+      }
+      _status = result.statusLine;
+    });
   }
 
   Future<void> _completeTrade() async {
@@ -1947,6 +2091,491 @@ class _TradePanel extends StatelessWidget {
   }
 }
 
+class _BattlePanel extends StatelessWidget {
+  const _BattlePanel({
+    required this.captures,
+    required this.selectedCapture,
+    required this.battleId,
+    required this.outgoingPackage,
+    required this.incomingPackage,
+    required this.result,
+    required this.onSelected,
+    required this.onBattleIdChanged,
+    required this.onGenerateBattleId,
+    required this.onScan,
+    required this.onClearIncoming,
+    required this.onStartBattle,
+  });
+
+  final List<CritterCapture> captures;
+  final CritterCapture? selectedCapture;
+  final String battleId;
+  final BattlePackage? outgoingPackage;
+  final BattlePackage? incomingPackage;
+  final BattleResult? result;
+  final ValueChanged<CritterCapture?> onSelected;
+  final ValueChanged<String> onBattleIdChanged;
+  final VoidCallback onGenerateBattleId;
+  final VoidCallback onScan;
+  final VoidCallback onClearIncoming;
+  final VoidCallback onStartBattle;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 780;
+          final children = [
+            Expanded(child: _buildYourSide(context)),
+            SizedBox(width: wide ? 16 : 0, height: wide ? 0 : 16),
+            Expanded(child: _buildOpponentSide(context)),
+          ];
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Battle',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Use the same battle ID, scan both battle codes, then run the fight.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: wide
+                    ? Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: children,
+                      )
+                    : Column(children: children),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: selectedCapture == null || incomingPackage == null
+                    ? null
+                    : onStartBattle,
+                icon: const Icon(Icons.play_arrow_outlined),
+                label: const Text('Start battle'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildYourSide(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final dark = theme.brightness == Brightness.dark;
+    final menuColor = dark ? const Color(0xff17262e) : const Color(0xfffffcf4);
+
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Your Battler',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _BattleIdField(
+            value: battleId,
+            onChanged: onBattleIdChanged,
+            onGenerate: onGenerateBattleId,
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: selectedCapture?.id,
+            isExpanded: true,
+            dropdownColor: menuColor,
+            borderRadius: BorderRadius.circular(8),
+            style: theme.textTheme.bodyLarge?.copyWith(color: colors.onSurface),
+            iconEnabledColor: colors.primary,
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: menuColor,
+              border: const OutlineInputBorder(),
+              labelText: 'Capture',
+              labelStyle: TextStyle(color: colors.onSurfaceVariant),
+            ),
+            items: captures
+                .map(
+                  (capture) => DropdownMenuItem(
+                    value: capture.id,
+                    child: Text(
+                      '${capture.commonName} - ${formatDateTime(capture.capturedAt)}',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: captures.isEmpty
+                ? null
+                : (id) {
+                    onSelected(
+                      captures.where((capture) => capture.id == id).firstOrNull,
+                    );
+                  },
+          ),
+          const SizedBox(height: 12),
+          if (outgoingPackage == null)
+            const Text('Pick a capture and set a battle ID to make a code.')
+          else ...[
+            _BattleQrPreview(package: outgoingPackage!),
+            const SizedBox(height: 8),
+            _CaptureSummary(capture: outgoingPackage!.capture),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOpponentSide(BuildContext context) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Opponent',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.tonalIcon(
+            onPressed: battleId.trim().isEmpty ? null : onScan,
+            icon: const Icon(Icons.qr_code_scanner_outlined),
+            label: const Text('Scan battle QR'),
+          ),
+          const SizedBox(height: 12),
+          if (incomingPackage == null)
+            const Text('No opponent scanned yet.')
+          else ...[
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    incomingPackage!.capture.commonName,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Clear opponent',
+                  onPressed: onClearIncoming,
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+            _CaptureSummary(capture: incomingPackage!.capture),
+          ],
+          if (result != null) ...[
+            const SizedBox(height: 12),
+            _BattleResultPanel(result: result!),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _BattleQrPreview extends StatelessWidget {
+  const _BattleQrPreview({required this.package});
+
+  final BattlePackage package;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth =
+            constraints.maxWidth.isFinite ? constraints.maxWidth - 32 : 240.0;
+        final size = min(220.0, max(128.0, availableWidth));
+
+        return Center(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => _FullScreenBattleQrScreen(package: package),
+                ),
+              );
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: colors.primary, width: 2),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: _FlashingBattleQrCode(
+                      package: package,
+                      size: size,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Tap to enlarge - ${package.toQrChunks().length} battle pieces',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: colors.primary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BattleIdField extends StatefulWidget {
+  const _BattleIdField({
+    required this.value,
+    required this.onChanged,
+    required this.onGenerate,
+  });
+
+  final String value;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onGenerate;
+
+  @override
+  State<_BattleIdField> createState() => _BattleIdFieldState();
+}
+
+class _BattleIdFieldState extends State<_BattleIdField> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.value);
+  }
+
+  @override
+  void didUpdateWidget(covariant _BattleIdField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != _controller.text) {
+      _controller.text = widget.value;
+      _controller.selection = TextSelection.collapsed(
+        offset: _controller.text.length,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: _controller,
+      decoration: InputDecoration(
+        border: const OutlineInputBorder(),
+        labelText: 'Battle ID',
+        suffixIcon: IconButton(
+          tooltip: 'Generate battle ID',
+          onPressed: widget.onGenerate,
+          icon: const Icon(Icons.casino_outlined),
+        ),
+      ),
+      onChanged: widget.onChanged,
+    );
+  }
+}
+
+class _FullScreenBattleQrScreen extends StatelessWidget {
+  const _FullScreenBattleQrScreen({required this.package});
+
+  final BattlePackage package;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        title: Text('Battle ${package.battleId}'),
+      ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final size = min(
+              constraints.maxWidth - 32,
+              constraints.maxHeight - 150,
+            ).clamp(220.0, 520.0);
+
+            return Column(
+              children: [
+                Expanded(
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: _FlashingBattleQrCode(
+                        package: package,
+                        size: size,
+                        labelColor: Colors.black,
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.black,
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_fullscreen),
+                    label: const Text('Close full screen'),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _FlashingBattleQrCode extends StatefulWidget {
+  const _FlashingBattleQrCode({
+    required this.package,
+    required this.size,
+    this.labelColor = Colors.black87,
+  });
+
+  final BattlePackage package;
+  final double size;
+  final Color labelColor;
+
+  @override
+  State<_FlashingBattleQrCode> createState() => _FlashingBattleQrCodeState();
+}
+
+class _FlashingBattleQrCodeState extends State<_FlashingBattleQrCode> {
+  late List<BattleQrChunk> _chunks;
+  Timer? _timer;
+  int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _resetChunks();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FlashingBattleQrCode oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.package.capture.id != widget.package.capture.id ||
+        oldWidget.package.battleId != widget.package.battleId) {
+      _resetChunks();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _resetChunks() {
+    _timer?.cancel();
+    _chunks = widget.package.toQrChunks();
+    _index = 0;
+    if (_chunks.length > 1) {
+      _timer = Timer.periodic(const Duration(milliseconds: 850), (_) {
+        if (!mounted) return;
+        setState(() => _index = (_index + 1) % _chunks.length);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chunk = _chunks[_index];
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        QrImageView(
+          data: chunk.toQrData(),
+          version: QrVersions.auto,
+          size: widget.size,
+          backgroundColor: Colors.white,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Battle ${widget.package.battleId} - Part ${chunk.label}',
+          style: TextStyle(
+            color: widget.labelColor,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BattleResultPanel extends StatelessWidget {
+  const _BattleResultPanel({required this.result});
+
+  final BattleResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              result.statusLine,
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            ...result.events.take(12).map((event) => Text(event)),
+            if (result.events.length > 12)
+              Text('...${result.events.length - 12} more turns'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TradeQrPreview extends StatelessWidget {
   const _TradeQrPreview({
     required this.package,
@@ -2253,6 +2882,72 @@ class _TradeQrScannerScreenState extends State<_TradeQrScannerScreen> {
   }
 }
 
+class _BattleQrScannerScreen extends StatefulWidget {
+  const _BattleQrScannerScreen();
+
+  @override
+  State<_BattleQrScannerScreen> createState() => _BattleQrScannerScreenState();
+}
+
+class _BattleQrScannerScreenState extends State<_BattleQrScannerScreen> {
+  final _assembler = BattleQrAssembler();
+  bool _handled = false;
+  String _status = 'Point the camera at the flashing WildDex battle QR.';
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan Battle QR')),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          MobileScanner(
+            onDetect: (capture) {
+              if (_handled) return;
+              final raw = capture.barcodes
+                  .map((barcode) => barcode.rawValue)
+                  .whereType<String>()
+                  .firstOrNull;
+              if (raw == null) return;
+              try {
+                final package = _assembler.addQrData(raw);
+                if (package == null) {
+                  setState(() => _status = _assembler.progressLabel);
+                } else {
+                  _handled = true;
+                  Navigator.pop(context, package);
+                }
+              } catch (error) {
+                setState(() => _status = error.toString());
+              }
+            },
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.68),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    _status,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Panel extends StatelessWidget {
   const _Panel({required this.child});
 
@@ -2494,6 +3189,21 @@ class EntryRepository {
       commonName: savedEntry.commonName,
       scientificName: savedEntry.scientificName,
       source: 'trade',
+      capturedAt: DateTime.now(),
+    );
+    _captures.add(imported);
+    _syncScanCount(savedEntry.speciesKey);
+    await _persist();
+  }
+
+  Future<void> importBattlePackage(BattlePackage package) async {
+    final savedEntry = saveEntryWithoutScan(package.entry);
+    final imported = package.capture.copyWith(
+      id: newCaptureId(),
+      speciesKey: savedEntry.speciesKey,
+      commonName: savedEntry.commonName,
+      scientificName: savedEntry.scientificName,
+      source: 'battle',
       capturedAt: DateTime.now(),
     );
     _captures.add(imported);
@@ -3319,6 +4029,286 @@ class TradeQrAssembler {
   }
 }
 
+class BattlePackage {
+  const BattlePackage({
+    required this.battleId,
+    required this.entry,
+    required this.capture,
+  });
+
+  static const prefix = 'wilddex_battle_v1:';
+  static const chunkPrefix = 'wilddex_battle_chunk_v1:';
+  static const chunkSize = 520;
+
+  final String battleId;
+  final AnimalEntry entry;
+  final CritterCapture capture;
+
+  String get encodedPayload =>
+      base64Url.encode(utf8.encode(jsonEncode(toJson())));
+
+  List<BattleQrChunk> toQrChunks() {
+    final encoded = encodedPayload;
+    final checksum = sha1.convert(utf8.encode(encoded)).toString();
+    final packageId = checksum.substring(0, 12);
+    final total = max(1, (encoded.length / chunkSize).ceil());
+
+    return [
+      for (var index = 0; index < total; index++)
+        BattleQrChunk(
+          packageId: packageId,
+          index: index,
+          total: total,
+          checksum: checksum,
+          payload: encoded.substring(
+            index * chunkSize,
+            min(encoded.length, (index + 1) * chunkSize),
+          ),
+        ),
+    ];
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'battleId': battleId,
+      'entry': entry.toJson(),
+      'capture': capture.toJson(),
+    };
+  }
+
+  static BattlePackage fromEncodedPayload(String encoded) {
+    final decoded = utf8.decode(base64Url.decode(encoded));
+    final payload = jsonDecode(decoded) as Map<String, dynamic>;
+    return BattlePackage(
+      battleId: AnimalEntry._string(payload['battleId']),
+      entry: AnimalEntry.fromJson(payload['entry'] as Map<String, dynamic>),
+      capture:
+          CritterCapture.fromJson(payload['capture'] as Map<String, dynamic>),
+    );
+  }
+}
+
+class BattleQrChunk {
+  const BattleQrChunk({
+    required this.packageId,
+    required this.index,
+    required this.total,
+    required this.checksum,
+    required this.payload,
+  });
+
+  final String packageId;
+  final int index;
+  final int total;
+  final String checksum;
+  final String payload;
+
+  String get label => '${index + 1}/$total';
+
+  String toQrData() {
+    return '${BattlePackage.chunkPrefix}$packageId:$index:$total:$checksum:$payload';
+  }
+
+  static BattleQrChunk fromQrData(String data) {
+    if (!data.startsWith(BattlePackage.chunkPrefix)) {
+      throw const FormatException(
+          'That QR code is not a WildDex battle chunk.');
+    }
+
+    final body = data.substring(BattlePackage.chunkPrefix.length);
+    final parts = body.split(':');
+    if (parts.length != 5) {
+      throw const FormatException('WildDex battle chunk is malformed.');
+    }
+
+    final index = int.tryParse(parts[1]);
+    final total = int.tryParse(parts[2]);
+    if (index == null || total == null || index < 0 || total <= 0) {
+      throw const FormatException('WildDex battle chunk has bad numbering.');
+    }
+    if (index >= total) {
+      throw const FormatException(
+          'WildDex battle chunk index is out of range.');
+    }
+
+    return BattleQrChunk(
+      packageId: parts[0],
+      index: index,
+      total: total,
+      checksum: parts[3],
+      payload: parts[4],
+    );
+  }
+}
+
+class BattleQrAssembler {
+  final Map<int, String> _parts = {};
+  String? _packageId;
+  String? _checksum;
+  int? _total;
+
+  String get progressLabel {
+    final expected = _total ?? 0;
+    if (expected == 0) return 'Scanning battle pieces...';
+    return 'Captured ${_parts.length} of $expected battle pieces.';
+  }
+
+  BattlePackage? addQrData(String data) {
+    final chunk = BattleQrChunk.fromQrData(data);
+    if (_packageId != null && _packageId != chunk.packageId) {
+      reset();
+    }
+
+    _packageId = chunk.packageId;
+    _checksum = chunk.checksum;
+    _total = chunk.total;
+    _parts[chunk.index] = chunk.payload;
+
+    if (_parts.length != chunk.total) return null;
+
+    final encoded = [
+      for (var index = 0; index < chunk.total; index++) _parts[index] ?? '',
+    ].join();
+    final checksum = sha1.convert(utf8.encode(encoded)).toString();
+    if (checksum != _checksum) {
+      reset();
+      throw const FormatException('WildDex battle pieces did not match.');
+    }
+
+    return BattlePackage.fromEncodedPayload(encoded);
+  }
+
+  void reset() {
+    _parts.clear();
+    _packageId = null;
+    _checksum = null;
+    _total = null;
+  }
+}
+
+class BattleResult {
+  const BattleResult({
+    required this.ownWon,
+    required this.stoleOpponent,
+    required this.winnerName,
+    required this.loserName,
+    required this.events,
+  });
+
+  final bool ownWon;
+  final bool stoleOpponent;
+  final String winnerName;
+  final String loserName;
+  final List<String> events;
+
+  bool get ownLost => !ownWon;
+
+  String get statusLine {
+    if (ownLost) return '$loserName lost the battle and was released.';
+    if (stoleOpponent) return '$winnerName won and captured $loserName.';
+    return '$winnerName won. $loserName escaped capture.';
+  }
+}
+
+class BattleParticipant {
+  BattleParticipant({
+    required this.package,
+    required this.isOwn,
+  })  : hp = battleMaxHp(package.capture.stats),
+        maxHp = battleMaxHp(package.capture.stats);
+
+  final BattlePackage package;
+  final bool isOwn;
+  final int maxHp;
+  int hp;
+
+  String get id => package.capture.id;
+  String get name => package.capture.commonName;
+  Map<String, int> get stats => package.capture.stats;
+}
+
+BattleResult simulateBattle({
+  required BattlePackage ownPackage,
+  required BattlePackage opponentPackage,
+}) {
+  final participants = [
+    BattleParticipant(package: ownPackage, isOwn: true),
+    BattleParticipant(package: opponentPackage, isOwn: false),
+  ]..sort((a, b) => a.id.compareTo(b.id));
+
+  final rng = SeededRng(seedForBattle(ownPackage, opponentPackage));
+  final events = <String>[];
+
+  for (var round = 1; round <= 60; round++) {
+    if (participants.any((participant) => participant.hp <= 0)) break;
+
+    final order = participants.toList()
+      ..sort((a, b) {
+        final speedCompare =
+            statValue(b.stats, 'Speed').compareTo(statValue(a.stats, 'Speed'));
+        if (speedCompare != 0) return speedCompare;
+        return a.id.compareTo(b.id);
+      });
+
+    for (final attacker in order) {
+      final defender = identical(attacker, participants[0])
+          ? participants[1]
+          : participants[0];
+      if (attacker.hp <= 0 || defender.hp <= 0) continue;
+
+      if (rng.nextDouble() > attackChance(attacker.stats)) {
+        events.add('Round $round: ${attacker.name} watches for an opening.');
+        continue;
+      }
+
+      final dodge = dodgeChance(defender.stats, attacker.stats);
+      if (rng.nextDouble() < dodge) {
+        events.add('Round $round: ${defender.name} dodges ${attacker.name}.');
+        continue;
+      }
+
+      var damage = attackDamage(attacker.stats, defender.stats, rng);
+      final crit = rng.nextDouble() < critChance(attacker.stats);
+      if (crit) damage = (damage * 1.55).round();
+      defender.hp = max(0, defender.hp - damage);
+      events.add(
+        'Round $round: ${attacker.name} hits ${defender.name} for $damage${crit ? ' critical' : ''}.',
+      );
+    }
+  }
+
+  final winner = participants.reduce((best, next) {
+    if (best.hp != next.hp) return best.hp > next.hp ? best : next;
+    return statValue(best.stats, 'Speed') >= statValue(next.stats, 'Speed')
+        ? best
+        : next;
+  });
+  final loser =
+      identical(winner, participants[0]) ? participants[1] : participants[0];
+  final ownWon = winner.isOwn;
+  final stealChance = opponentStealChance(winner.stats, loser.stats);
+  final stoleOpponent = ownWon && rng.nextDouble() < stealChance;
+
+  events.add('${winner.name} wins with ${winner.hp}/${winner.maxHp} HP.');
+  if (ownWon) {
+    events.add(
+      stoleOpponent
+          ? '${loser.name} was captured after the battle.'
+          : '${loser.name} escaped after the battle.',
+    );
+  } else {
+    events.add('${loser.name} was released after losing.');
+  }
+
+  return BattleResult(
+    ownWon: ownWon,
+    stoleOpponent: stoleOpponent,
+    winnerName: winner.name,
+    loserName: loser.name,
+    events: events,
+  );
+}
+
 const _notAnimalSpeciesKey = 'not an animal';
 
 class AnimalIdentity {
@@ -3830,6 +4820,112 @@ String formatDateTime(DateTime value) {
   final time =
       '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   return '$date $time';
+}
+
+String generateBattleId() {
+  final random = Random();
+  return (100000 + random.nextInt(900000)).toString();
+}
+
+String normalizeBattleId(String value) {
+  return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '').trim();
+}
+
+int statValue(Map<String, int> stats, String stat) {
+  return (stats[stat] ?? stats[stat.toLowerCase()] ?? 50).clamp(0, 100);
+}
+
+int battleMaxHp(Map<String, int> stats) {
+  return (80 +
+          statValue(stats, 'Defense') * 0.8 +
+          statValue(stats, 'Power') * 0.2 +
+          statValue(stats, 'Intelligence') * 0.12)
+      .round();
+}
+
+double attackChance(Map<String, int> stats) {
+  return (0.22 +
+          statValue(stats, 'Speed') * 0.004 +
+          statValue(stats, 'Intelligence') * 0.0015 +
+          statValue(stats, 'Rarity') * 0.0008)
+      .clamp(0.18, 0.84);
+}
+
+double dodgeChance(Map<String, int> defender, Map<String, int> attacker) {
+  return (statValue(defender, 'Stealth') * 0.0035 +
+          statValue(defender, 'Speed') * 0.001 +
+          statValue(defender, 'Intelligence') * 0.0008 +
+          statValue(defender, 'Rarity') * 0.0005 -
+          statValue(attacker, 'Intelligence') * 0.0006)
+      .clamp(0.03, 0.46);
+}
+
+double critChance(Map<String, int> stats) {
+  return (0.04 +
+          statValue(stats, 'Intelligence') * 0.0018 +
+          statValue(stats, 'Rarity') * 0.0007)
+      .clamp(0.04, 0.3);
+}
+
+int attackDamage(
+  Map<String, int> attacker,
+  Map<String, int> defender,
+  SeededRng rng,
+) {
+  final raw = 6 +
+      statValue(attacker, 'Power') * 0.36 +
+      statValue(attacker, 'Intelligence') * 0.06 +
+      rng.nextInt(9);
+  final blocked = statValue(defender, 'Defense') * 0.18;
+  return max(2, (raw - blocked).round());
+}
+
+double opponentStealChance(
+  Map<String, int> winner,
+  Map<String, int> loser,
+) {
+  return (0.18 +
+          statValue(winner, 'Rarity') * 0.002 +
+          statValue(winner, 'Intelligence') * 0.001 -
+          statValue(loser, 'Rarity') * 0.001)
+      .clamp(0.05, 0.55);
+}
+
+int seedForBattle(BattlePackage first, BattlePackage second) {
+  final payload = [
+    normalizeBattleId(first.battleId),
+    ...[first, second]
+        .map(
+          (package) =>
+              '${package.capture.id}:${package.capture.commonName}:${jsonEncode(package.capture.stats)}',
+        )
+        .toList()
+      ..sort(),
+  ].join('|');
+  final digest = sha1.convert(utf8.encode(payload)).bytes;
+  var seed = 0;
+  for (final byte in digest.take(4)) {
+    seed = ((seed << 8) | byte) & 0x7fffffff;
+  }
+  return seed == 0 ? 1 : seed;
+}
+
+class SeededRng {
+  SeededRng(int seed) : _state = seed & 0x7fffffff {
+    if (_state == 0) _state = 1;
+  }
+
+  int _state;
+
+  double nextDouble() {
+    _state = (_state * 1103515245 + 12345) & 0x7fffffff;
+    return _state / 0x80000000;
+  }
+
+  int nextInt(int max) {
+    if (max <= 0) return 0;
+    return (nextDouble() * max).floor();
+  }
 }
 
 String normalizeOpenAiApiKey(String value) {

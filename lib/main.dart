@@ -331,92 +331,25 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _stopSpeaking() => _tts.stop();
 
   Future<void> _openApiKeySheet() async {
-    final controller = TextEditingController(text: _runtimeOpenAiKey);
-    await showModalBottomSheet<void>(
+    final key = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (context) {
-        String? errorText;
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return Padding(
-              padding: EdgeInsets.fromLTRB(
-                16,
-                0,
-                16,
-                MediaQuery.viewInsetsOf(context).bottom + 16,
-              ),
-              child: SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'OpenAI Key',
-                      style:
-                          Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.w800,
-                              ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Paste an OpenAI API key for this device. It is saved locally and cleaned up if you paste extra text like "Bearer".',
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: controller,
-                      obscureText: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      textInputAction: TextInputAction.done,
-                      decoration: InputDecoration(
-                        border: const OutlineInputBorder(),
-                        labelText: 'OpenAI API key',
-                        errorText: errorText,
-                        prefixIcon: const Icon(Icons.key_outlined),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        TextButton.icon(
-                          onPressed: () async {
-                            await clearStoredOpenAiKey();
-                            setState(() => _runtimeOpenAiKey = '');
-                            if (context.mounted) Navigator.pop(context);
-                          },
-                          icon: const Icon(Icons.delete_outline),
-                          label: const Text('Clear'),
-                        ),
-                        const Spacer(),
-                        FilledButton.icon(
-                          onPressed: () async {
-                            final key = normalizeOpenAiApiKey(controller.text);
-                            if (key.isEmpty) {
-                              setSheetState(() {
-                                errorText = 'Paste an OpenAI API key first.';
-                              });
-                              return;
-                            }
-                            await saveStoredOpenAiKey(key);
-                            setState(() => _runtimeOpenAiKey = key);
-                            if (context.mounted) Navigator.pop(context);
-                          },
-                          icon: const Icon(Icons.save_outlined),
-                          label: const Text('Save'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+      builder: (context) => _ApiKeySheet(initialKey: _runtimeOpenAiKey),
     );
-    controller.dispose();
+
+    if (key == null) return;
+
+    if (key.isEmpty) {
+      await clearStoredOpenAiKey();
+      if (!mounted) return;
+      setState(() => _runtimeOpenAiKey = '');
+      return;
+    }
+
+    await saveStoredOpenAiKey(key);
+    if (!mounted) return;
+    setState(() => _runtimeOpenAiKey = key);
   }
 
   Future<void> _setConsoleMode(bool enabled) async {
@@ -807,6 +740,102 @@ class _ScannerPanel extends StatefulWidget {
 
   @override
   State<_ScannerPanel> createState() => _ScannerPanelState();
+}
+
+class _ApiKeySheet extends StatefulWidget {
+  const _ApiKeySheet({required this.initialKey});
+
+  final String initialKey;
+
+  @override
+  State<_ApiKeySheet> createState() => _ApiKeySheetState();
+}
+
+class _ApiKeySheetState extends State<_ApiKeySheet> {
+  late final TextEditingController _controller;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialKey);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final key = normalizeOpenAiApiKey(_controller.text);
+    if (key.isEmpty) {
+      setState(() => _errorText = 'Paste an OpenAI API key first.');
+      return;
+    }
+    Navigator.pop(context, key);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        16,
+        0,
+        16,
+        MediaQuery.viewInsetsOf(context).bottom + 16,
+      ),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'OpenAI Key',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Paste an OpenAI API key for this device. It is saved locally and cleaned up if you paste extra text like "Bearer".',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _controller,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _save(),
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                labelText: 'OpenAI API key',
+                errorText: _errorText,
+                prefixIcon: const Icon(Icons.key_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: () => Navigator.pop(context, ''),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Clear'),
+                ),
+                const Spacer(),
+                FilledButton.icon(
+                  onPressed: _save,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('Save'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ScannerPanelState extends State<_ScannerPanel>

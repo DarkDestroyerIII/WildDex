@@ -73,6 +73,16 @@ void main() {
     expect(prompt, contains('do not return "Loxosceles reclusa"'));
   });
 
+  test('OpenAI key paste cleanup accepts common copied formats', () {
+    const key = 'sk-proj-abc_123-XYZ4567890';
+
+    expect(normalizeOpenAiApiKey('Bearer $key'), key);
+    expect(normalizeOpenAiApiKey('Authorization: Bearer $key'), key);
+    expect(normalizeOpenAiApiKey("const String openAiApiKey = '$key';"), key);
+    expect(looksLikeOpenAiKey(key), isTrue);
+    expect(looksLikeOpenAiKey('not a key'), isFalse);
+  });
+
   test('trade package round trips through QR payload', () {
     final entry = AnimalEntry.fromGeneratedJson({
       'is_animal': true,

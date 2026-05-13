@@ -134,7 +134,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _initialize() async {
     await _repository.load();
     final prefs = await SharedPreferences.getInstance();
-    final storedApiKey = await loadStoredOpenAiKey();
+    final storedApiKey = normalizeOpenAiApiKey(await loadStoredOpenAiKey());
+    final configuredApiKey = normalizeOpenAiApiKey(openAiApiKey);
     await _tts.setSpeechRate(0.47);
     await _tts.setPitch(1.06);
     await _tts.setVolume(1);
@@ -146,15 +147,17 @@ class _HomeScreenState extends State<HomeScreen> {
       _consoleMode = prefs.getBool(_consoleModeKey) ?? false;
       _cooldownMinutes = prefs.getInt(_cooldownMinutesKey) ?? 3;
       _runtimeOpenAiKey =
-          storedApiKey.trim().isNotEmpty ? storedApiKey : openAiApiKey;
+          storedApiKey.isNotEmpty ? storedApiKey : configuredApiKey;
       _loading = false;
     });
   }
 
   Future<void> _takePhoto() async {
-    if (_runtimeOpenAiKey.trim().isEmpty) {
+    _runtimeOpenAiKey = normalizeOpenAiApiKey(_runtimeOpenAiKey);
+    if (_runtimeOpenAiKey.isEmpty) {
       await _openApiKeySheet();
-      if (_runtimeOpenAiKey.trim().isEmpty) {
+      _runtimeOpenAiKey = normalizeOpenAiApiKey(_runtimeOpenAiKey);
+      if (_runtimeOpenAiKey.isEmpty) {
         setState(() {
           _status = 'Add an OpenAI API key before scanning.';
           _selectedSection = 0;
@@ -315,7 +318,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (error) {
       setState(() {
         _loading = false;
-        _status = 'Scan failed: $error';
+        _status = 'Scan failed: ${friendlyErrorMessage(error)}';
       });
     }
   }
@@ -334,66 +337,83 @@ class _HomeScreenState extends State<HomeScreen> {
       showDragHandle: true,
       isScrollControlled: true,
       builder: (context) {
-        return Padding(
-          padding: EdgeInsets.fromLTRB(
-            16,
-            0,
-            16,
-            MediaQuery.viewInsetsOf(context).bottom + 16,
-          ),
-          child: SafeArea(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'OpenAI Key',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Paste an OpenAI API key for this browser. WildDex saves it in a cookie on web.',
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: controller,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    labelText: 'OpenAI API key',
-                    prefixIcon: Icon(Icons.key_outlined),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Row(
+        String? errorText;
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                0,
+                16,
+                MediaQuery.viewInsetsOf(context).bottom + 16,
+              ),
+              child: SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    TextButton.icon(
-                      onPressed: () async {
-                        await clearStoredOpenAiKey();
-                        setState(() => _runtimeOpenAiKey = '');
-                        if (context.mounted) Navigator.pop(context);
-                      },
-                      icon: const Icon(Icons.delete_outline),
-                      label: const Text('Clear'),
+                    Text(
+                      'OpenAI Key',
+                      style:
+                          Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
                     ),
-                    const Spacer(),
-                    FilledButton.icon(
-                      onPressed: () async {
-                        final key = controller.text.trim();
-                        await saveStoredOpenAiKey(key);
-                        setState(() => _runtimeOpenAiKey = key);
-                        if (context.mounted) Navigator.pop(context);
-                      },
-                      icon: const Icon(Icons.save_outlined),
-                      label: const Text('Save'),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Paste an OpenAI API key for this device. It is saved locally and cleaned up if you paste extra text like "Bearer".',
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: controller,
+                      obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      textInputAction: TextInputAction.done,
+                      decoration: InputDecoration(
+                        border: const OutlineInputBorder(),
+                        labelText: 'OpenAI API key',
+                        errorText: errorText,
+                        prefixIcon: const Icon(Icons.key_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        TextButton.icon(
+                          onPressed: () async {
+                            await clearStoredOpenAiKey();
+                            setState(() => _runtimeOpenAiKey = '');
+                            if (context.mounted) Navigator.pop(context);
+                          },
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Clear'),
+                        ),
+                        const Spacer(),
+                        FilledButton.icon(
+                          onPressed: () async {
+                            final key = normalizeOpenAiApiKey(controller.text);
+                            if (!looksLikeOpenAiKey(key)) {
+                              setSheetState(() {
+                                errorText =
+                                    'Paste the key value that starts with sk-.';
+                              });
+                              return;
+                            }
+                            await saveStoredOpenAiKey(key);
+                            setState(() => _runtimeOpenAiKey = key);
+                            if (context.mounted) Navigator.pop(context);
+                          },
+                          icon: const Icon(Icons.save_outlined),
+                          label: const Text('Save'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -2690,6 +2710,11 @@ class OpenAiEntryService {
     required String prompt,
     required int maxOutputTokens,
   }) async {
+    final requestKey = normalizeOpenAiApiKey(apiKey);
+    if (requestKey.isEmpty) {
+      throw const WildDexException('OpenAI key is blank.');
+    }
+
     final uri = Uri.parse('https://api.openai.com/v1/responses');
     final body = {
       'model': openAiModel,
@@ -2716,7 +2741,7 @@ class OpenAiEntryService {
         .post(
           uri,
           headers: {
-            'Authorization': 'Bearer $apiKey',
+            'Authorization': 'Bearer $requestKey',
             'Content-Type': 'application/json',
           },
           body: jsonEncode(body),
@@ -2724,8 +2749,7 @@ class OpenAiEntryService {
         .timeout(const Duration(seconds: 45));
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception(
-          'OpenAI returned ${response.statusCode}: ${response.body}');
+      throw WildDexException(openAiStatusMessage(response));
     }
 
     final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -3778,6 +3802,81 @@ String formatDateTime(DateTime value) {
   final time =
       '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   return '$date $time';
+}
+
+String normalizeOpenAiApiKey(String value) {
+  var key = value.trim();
+  if (key.isEmpty) return '';
+
+  final match = RegExp(r'sk-[A-Za-z0-9_\-]+').firstMatch(key);
+  if (match != null) return match.group(0)!;
+
+  key = key
+      .replaceFirst(RegExp(r'^authorization\s*:\s*', caseSensitive: false), '')
+      .replaceFirst(RegExp(r'^bearer\s+', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s+'), '')
+      .replaceAll('"', '')
+      .replaceAll("'", '')
+      .replaceAll('`', '')
+      .replaceAll(';', '')
+      .trim();
+  return key;
+}
+
+bool looksLikeOpenAiKey(String value) {
+  final key = normalizeOpenAiApiKey(value);
+  return key.startsWith('sk-') && key.length >= 20;
+}
+
+String openAiStatusMessage(http.Response response) {
+  final status = response.statusCode;
+  var detail = '';
+  try {
+    final decoded = jsonDecode(response.body);
+    if (decoded is Map<String, dynamic>) {
+      final error = decoded['error'];
+      if (error is Map<String, dynamic>) {
+        detail = AnimalEntry._string(error['message']);
+      }
+    }
+  } catch (_) {
+    detail = '';
+  }
+
+  if (status == 401) {
+    return 'OpenAI rejected the key. Tap the key icon, clear it, and paste a current key that starts with sk-.';
+  }
+  if (status == 403) {
+    return 'OpenAI blocked this request for the current key or project. Check that the key belongs to an active project with API access.';
+  }
+  if (status == 429) {
+    return 'OpenAI says the key is rate-limited or out of quota. Check billing/limits for that API key.';
+  }
+  if (detail.isNotEmpty) {
+    return 'OpenAI returned $status: $detail';
+  }
+  return 'OpenAI returned $status. Try clearing and pasting the key again.';
+}
+
+String friendlyErrorMessage(Object error) {
+  if (error is WildDexException) return error.message;
+  final text = error.toString();
+  if (text.contains('SocketException') || text.contains('Failed host lookup')) {
+    return 'Network connection failed. Check signal or Wi-Fi and try again.';
+  }
+  if (text.contains('TimeoutException')) {
+    return 'OpenAI took too long to respond. Try again in a moment.';
+  }
+  return text.replaceFirst('Exception: ', '');
+}
+
+class WildDexException implements Exception {
+  const WildDexException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 extension FirstOrNullExtension<T> on Iterable<T> {

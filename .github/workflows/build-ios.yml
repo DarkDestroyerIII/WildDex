@@ -37,6 +37,28 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
+      - name: Inject OpenAI key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY secret is empty; app will still ask for a key."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          key = os.environ["OPENAI_API_KEY"]
+          path = Path("lib/openai_config.dart")
+          path.write_text(
+              "// Generated during CI. Do not commit secrets.\n"
+              "const String openAiApiKey =\n"
+              f"    '{key}';\n\n"
+              "const String openAiModel = 'gpt-4.1-mini';\n"
+          )
+          PY
+
       - name: Run tests
         run: flutter test
 

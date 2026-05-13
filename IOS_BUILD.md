@@ -23,6 +23,7 @@ Store signing.
 
 Add these repository secrets in GitHub:
 
+- `OPENAI_API_KEY`: your OpenAI API key, injected during the build.
 - `IOS_CERTIFICATE_BASE64`: base64 of your `.p12` signing certificate.
 - `IOS_CERTIFICATE_PASSWORD`: password for that `.p12`.
 - `IOS_PROVISIONING_PROFILE_BASE64`: base64 of your `.mobileprovision` file.

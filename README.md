@@ -4,11 +4,15 @@ WildDex is a Flutter app for Android and iOS. Take a photo of an animal, and the
 
 ## Add Your OpenAI Key
 
-Open `lib/openai_config.dart` and paste your key:
+For Android/iOS builds, open `lib/openai_config.dart` and paste your key:
 
 ```dart
 const String openAiApiKey = 'sk-...';
 ```
+
+For the GitHub Pages web app, tap the key icon in the app bar and paste the
+key in the browser. WildDex stores it in a browser cookie so it is not committed
+to GitHub.
 
 The app uses the OpenAI Responses API with a vision-capable model. For personal testing this is convenient, but do not ship a public app with the API key compiled into it. Use a small backend proxy before distributing it.
 
@@ -49,3 +53,16 @@ The iOS project is included in `ios/`, but iOS builds require macOS with Xcode:
 ```bash
 flutter build ios
 ```
+
+## GitHub Pages Web App
+
+The repo includes a GitHub Actions workflow that deploys Flutter web to GitHub
+Pages whenever `main` is pushed.
+
+1. In GitHub, open `Settings` > `Pages`.
+2. Set **Source** to **GitHub Actions**.
+3. Push to `main` or run **Actions** > **Deploy Web to GitHub Pages**.
+4. Open `https://darkdestroyeriii.github.io/WildDex/`.
+
+On the web app, each user enters their own OpenAI key with the key button in the
+top app bar. The key is saved in a cookie in that browser.

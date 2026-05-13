@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -13,6 +12,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'api_key_store.dart';
 import 'openai_config.dart';
 
 const _consoleModeKey = 'wilddex.console_mode.v1';
@@ -107,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _wiki = WikipediaImageService();
 
   AnimalEntry? _currentEntry;
-  File? _pickedPhoto;
+  Uint8List? _pickedPhotoBytes;
   List<AnimalEntry> _entries = const [];
   List<CritterCapture> _captures = const [];
   bool _loading = true;
@@ -122,6 +122,7 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTime? _lastThreeFingerTap;
   bool _consoleMode = false;
   int _cooldownMinutes = 3;
+  String _runtimeOpenAiKey = '';
 
   @override
   void initState() {
@@ -132,6 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _initialize() async {
     await _repository.load();
     final prefs = await SharedPreferences.getInstance();
+    final storedApiKey = await loadStoredOpenAiKey();
     await _tts.setSpeechRate(0.47);
     await _tts.setPitch(1.06);
     await _tts.setVolume(1);
@@ -142,18 +144,25 @@ class _HomeScreenState extends State<HomeScreen> {
       _currentEntry = _entries.isNotEmpty ? _entries.first : null;
       _consoleMode = prefs.getBool(_consoleModeKey) ?? false;
       _cooldownMinutes = prefs.getInt(_cooldownMinutesKey) ?? 3;
+      _runtimeOpenAiKey =
+          storedApiKey.trim().isNotEmpty ? storedApiKey : openAiApiKey;
       _loading = false;
     });
   }
 
   Future<void> _takePhoto() async {
-    if (openAiApiKey.trim().isEmpty) {
-      setState(() {
-        _status = 'Add your OpenAI API key in lib/openai_config.dart first.';
-        _selectedSection = 0;
-      });
-      return;
+    if (_runtimeOpenAiKey.trim().isEmpty) {
+      await _openApiKeySheet();
+      if (_runtimeOpenAiKey.trim().isEmpty) {
+        setState(() {
+          _status = 'Add an OpenAI API key before scanning.';
+          _selectedSection = 0;
+        });
+        return;
+      }
     }
+
+    _openAi.apiKey = _runtimeOpenAiKey;
 
     final image = await _picker.pickImage(
       source: ImageSource.camera,
@@ -164,10 +173,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (image == null) return;
 
     final bytes = await image.readAsBytes();
+    final photoBytes = Uint8List.fromList(bytes);
     final photoHash = sha1.convert(bytes).toString();
 
     setState(() {
-      _pickedPhoto = File(image.path);
+      _pickedPhotoBytes = photoBytes;
       _loading = true;
       _selectedSection = 0;
       _status = 'Checking the local WildDex cache...';
@@ -316,6 +326,79 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _stopSpeaking() => _tts.stop();
 
+  Future<void> _openApiKeySheet() async {
+    final controller = TextEditingController(text: _runtimeOpenAiKey);
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+            16,
+            0,
+            16,
+            MediaQuery.viewInsetsOf(context).bottom + 16,
+          ),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'OpenAI Key',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Paste an OpenAI API key for this browser. WildDex saves it in a cookie on web.',
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    labelText: 'OpenAI API key',
+                    prefixIcon: Icon(Icons.key_outlined),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    TextButton.icon(
+                      onPressed: () async {
+                        await clearStoredOpenAiKey();
+                        setState(() => _runtimeOpenAiKey = '');
+                        if (context.mounted) Navigator.pop(context);
+                      },
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('Clear'),
+                    ),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: () async {
+                        final key = controller.text.trim();
+                        await saveStoredOpenAiKey(key);
+                        setState(() => _runtimeOpenAiKey = key);
+                        if (context.mounted) Navigator.pop(context);
+                      },
+                      icon: const Icon(Icons.save_outlined),
+                      label: const Text('Save'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    controller.dispose();
+  }
+
   Future<void> _setConsoleMode(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_consoleModeKey, enabled);
@@ -447,6 +530,15 @@ class _HomeScreenState extends State<HomeScreen> {
             title: Text(_consoleMode ? 'WildDex Field Console' : 'WildDex'),
             actions: [
               IconButton(
+                tooltip: 'OpenAI key',
+                onPressed: _openApiKeySheet,
+                icon: Icon(
+                  _runtimeOpenAiKey.trim().isEmpty
+                      ? Icons.key_off_outlined
+                      : Icons.key_outlined,
+                ),
+              ),
+              IconButton(
                 tooltip: 'Stop voice',
                 onPressed: _stopSpeaking,
                 icon: const Icon(Icons.volume_off_outlined),
@@ -501,7 +593,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               flex: 3,
               child: _ScannerPanel(
-                pickedPhoto: _pickedPhoto,
+                pickedPhotoBytes: _pickedPhotoBytes,
                 loading: _loading,
                 status: _status,
                 onCamera: _takePhoto,
@@ -525,7 +617,7 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.all(16),
       children: [
         _ScannerPanel(
-          pickedPhoto: _pickedPhoto,
+          pickedPhotoBytes: _pickedPhotoBytes,
           loading: _loading,
           status: _status,
           onCamera: _takePhoto,
@@ -682,13 +774,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _ScannerPanel extends StatefulWidget {
   const _ScannerPanel({
-    required this.pickedPhoto,
+    required this.pickedPhotoBytes,
     required this.loading,
     required this.status,
     required this.onCamera,
   });
 
-  final File? pickedPhoto;
+  final Uint8List? pickedPhotoBytes;
   final bool loading;
   final String? status;
   final VoidCallback onCamera;
@@ -750,10 +842,13 @@ class _ScannerPanelState extends State<_ScannerPanel>
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    widget.pickedPhoto == null
+                    widget.pickedPhotoBytes == null
                         ? const _EmptyLens()
-                        : Image.file(widget.pickedPhoto!, fit: BoxFit.cover),
-                    if (widget.loading && widget.pickedPhoto != null)
+                        : Image.memory(
+                            widget.pickedPhotoBytes!,
+                            fit: BoxFit.cover,
+                          ),
+                    if (widget.loading && widget.pickedPhotoBytes != null)
                       _ScanningOverlay(
                         animation: _scanController,
                         accentColor:
@@ -2469,6 +2564,8 @@ class EntryRepository {
 }
 
 class OpenAiEntryService {
+  String apiKey = openAiApiKey;
+
   Future<AnimalIdentity> identifyAnimal(
     List<int> imageBytes, {
     LocationHint? locationHint,
@@ -2538,7 +2635,7 @@ class OpenAiEntryService {
         .post(
           uri,
           headers: {
-            'Authorization': 'Bearer $openAiApiKey',
+            'Authorization': 'Bearer $apiKey',
             'Content-Type': 'application/json',
           },
           body: jsonEncode(body),

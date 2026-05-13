@@ -393,10 +393,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         FilledButton.icon(
                           onPressed: () async {
                             final key = normalizeOpenAiApiKey(controller.text);
-                            if (!looksLikeOpenAiKey(key)) {
+                            if (key.isEmpty) {
                               setSheetState(() {
-                                errorText =
-                                    'Paste the key value that starts with sk-.';
+                                errorText = 'Paste an OpenAI API key first.';
                               });
                               return;
                             }
@@ -3808,18 +3807,25 @@ String normalizeOpenAiApiKey(String value) {
   var key = value.trim();
   if (key.isEmpty) return '';
 
-  final match = RegExp(r'sk-[A-Za-z0-9_\-]+').firstMatch(key);
-  if (match != null) return match.group(0)!;
-
   key = key
-      .replaceFirst(RegExp(r'^authorization\s*:\s*', caseSensitive: false), '')
-      .replaceFirst(RegExp(r'^bearer\s+', caseSensitive: false), '')
+      .replaceAll(RegExp(r'[\u200B-\u200D\uFEFF]'), '')
       .replaceAll(RegExp(r'\s+'), '')
       .replaceAll('"', '')
       .replaceAll("'", '')
       .replaceAll('`', '')
       .replaceAll(';', '')
       .trim();
+
+  final match = RegExp(r'sk-[A-Za-z0-9_\-.]+').firstMatch(key);
+  if (match != null) return match.group(0)!;
+
+  key = key
+      .replaceFirst(RegExp(r'^authorization\s*:\s*', caseSensitive: false), '')
+      .replaceFirst(RegExp(r'^bearer\s+', caseSensitive: false), '')
+      .trim();
+
+  final skIndex = key.toLowerCase().indexOf('sk');
+  if (skIndex > 0) return key.substring(skIndex);
   return key;
 }
 

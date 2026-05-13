@@ -79,6 +79,8 @@ void main() {
     expect(normalizeOpenAiApiKey('Bearer $key'), key);
     expect(normalizeOpenAiApiKey('Authorization: Bearer $key'), key);
     expect(normalizeOpenAiApiKey("const String openAiApiKey = '$key';"), key);
+    expect(normalizeOpenAiApiKey('OPENAI_API_KEY=$key'), key);
+    expect(normalizeOpenAiApiKey(' $key\n'), key);
     expect(looksLikeOpenAiKey(key), isTrue);
     expect(looksLikeOpenAiKey('not a key'), isFalse);
   });

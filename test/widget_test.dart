@@ -101,6 +101,45 @@ void main() {
     expect(decoded.capture.stats['Speed'], 72);
   });
 
+  test('trade package reassembles from flashing QR chunks', () {
+    final entry = AnimalEntry.fromGeneratedJson({
+      'is_animal': true,
+      'common_name': 'Eastern Gray Squirrel',
+      'scientific_name': 'Sciurus carolinensis',
+      'animal_group': 'Mammal',
+      'taxonomy': {'class': 'Mammalia', 'order': 'Rodentia'},
+      'habitat': 'Parks and forests with many tall trees',
+      'diet': 'Nuts, seeds, buds, fungi, and occasional insects',
+      'range': 'Eastern North America',
+      'abilities': ['Climbing', 'Caching food', 'Agile jumping'],
+      'stats': {'Power': 35, 'Speed': 72, 'Stealth': 68},
+      'description':
+          'A long enough description to force the trade payload into multiple QR chunks for safer scanning.',
+    });
+    final capture = CritterCapture(
+      id: 'capture-2',
+      speciesKey: entry.speciesKey,
+      commonName: entry.commonName,
+      scientificName: entry.scientificName,
+      label: 'Wild capture',
+      stats: entry.stats,
+      capturedAt: DateTime.utc(2026, 5, 12),
+      source: 'local',
+    );
+    final package = TradePackage(entry: entry, capture: capture);
+    final chunks = package.toQrChunks();
+    final assembler = TradeQrAssembler();
+    TradePackage? decoded;
+
+    expect(chunks.length, greaterThan(1));
+    for (final chunk in chunks.reversed) {
+      decoded = assembler.addQrData(chunk.toQrData());
+    }
+
+    expect(decoded?.entry.speciesKey, entry.speciesKey);
+    expect(decoded?.capture.id, capture.id);
+  });
+
   testWidgets('WildDex renders scanner controls', (WidgetTester tester) async {
     await tester.pumpWidget(const WildDexApp());
     await tester.pump();

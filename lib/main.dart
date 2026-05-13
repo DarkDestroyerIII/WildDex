@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:math';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -1931,17 +1932,15 @@ class _TradeQrPreview extends StatelessWidget {
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: QrImageView(
-                      data: package.toQrData(),
-                      version: QrVersions.auto,
+                    child: _FlashingTradeQrCode(
+                      package: package,
                       size: size,
-                      backgroundColor: Colors.white,
                     ),
                   ),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Tap QR to enlarge',
+                  'Tap to enlarge - ${package.toQrChunks().length} QR pieces',
                   style: Theme.of(context).textTheme.labelMedium?.copyWith(
                         color: colors.primary,
                         fontWeight: FontWeight.w800,
@@ -1984,11 +1983,10 @@ class _FullScreenTradeQrScreen extends StatelessWidget {
                   child: Center(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: QrImageView(
-                        data: package.toQrData(),
-                        version: QrVersions.auto,
+                      child: _FlashingTradeQrCode(
+                        package: package,
                         size: size,
-                        backgroundColor: Colors.white,
+                        labelColor: Colors.black,
                       ),
                     ),
                   ),
@@ -2023,6 +2021,84 @@ class _FullScreenTradeQrScreen extends StatelessWidget {
           },
         ),
       ),
+    );
+  }
+}
+
+class _FlashingTradeQrCode extends StatefulWidget {
+  const _FlashingTradeQrCode({
+    required this.package,
+    required this.size,
+    this.labelColor = Colors.black87,
+  });
+
+  final TradePackage package;
+  final double size;
+  final Color labelColor;
+
+  @override
+  State<_FlashingTradeQrCode> createState() => _FlashingTradeQrCodeState();
+}
+
+class _FlashingTradeQrCodeState extends State<_FlashingTradeQrCode> {
+  late List<TradeQrChunk> _chunks;
+  Timer? _timer;
+  int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _resetChunks();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FlashingTradeQrCode oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.package.capture.id != widget.package.capture.id) {
+      _resetChunks();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _resetChunks() {
+    _timer?.cancel();
+    _chunks = widget.package.toQrChunks();
+    _index = 0;
+    if (_chunks.length > 1) {
+      _timer = Timer.periodic(const Duration(milliseconds: 850), (_) {
+        if (!mounted) return;
+        setState(() => _index = (_index + 1) % _chunks.length);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chunk = _chunks[_index];
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        QrImageView(
+          data: chunk.toQrData(),
+          version: QrVersions.auto,
+          size: widget.size,
+          backgroundColor: Colors.white,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Part ${chunk.label}',
+          style: TextStyle(
+            color: widget.labelColor,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 0,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -2071,8 +2147,9 @@ class _TradeQrScannerScreen extends StatefulWidget {
 }
 
 class _TradeQrScannerScreenState extends State<_TradeQrScannerScreen> {
+  final _assembler = TradeQrAssembler();
   bool _handled = false;
-  String? _error;
+  String _status = 'Point the camera at the flashing WildDex trade QR.';
 
   @override
   Widget build(BuildContext context) {
@@ -2090,11 +2167,15 @@ class _TradeQrScannerScreenState extends State<_TradeQrScannerScreen> {
                   .firstOrNull;
               if (raw == null) return;
               try {
-                final package = TradePackage.fromQrData(raw);
-                _handled = true;
-                Navigator.pop(context, package);
+                final package = _assembler.addQrData(raw);
+                if (package == null) {
+                  setState(() => _status = _assembler.progressLabel);
+                } else {
+                  _handled = true;
+                  Navigator.pop(context, package);
+                }
               } catch (error) {
-                setState(() => _error = error.toString());
+                setState(() => _status = error.toString());
               }
             },
           ),
@@ -2110,7 +2191,7 @@ class _TradeQrScannerScreenState extends State<_TradeQrScannerScreen> {
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Text(
-                    _error ?? 'Point the camera at a WildDex trade QR.',
+                    _status,
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.white),
                   ),
@@ -3023,12 +3104,38 @@ class TradePackage {
   const TradePackage({required this.entry, required this.capture});
 
   static const prefix = 'wilddex_trade_v1:';
+  static const chunkPrefix = 'wilddex_trade_chunk_v1:';
+  static const chunkSize = 650;
 
   final AnimalEntry entry;
   final CritterCapture capture;
 
+  String get encodedPayload =>
+      base64Url.encode(utf8.encode(jsonEncode(toJson())));
+
   String toQrData() {
-    return '$prefix${base64Url.encode(utf8.encode(jsonEncode(toJson())))}';
+    return '$prefix$encodedPayload';
+  }
+
+  List<TradeQrChunk> toQrChunks() {
+    final encoded = encodedPayload;
+    final checksum = sha1.convert(utf8.encode(encoded)).toString();
+    final tradeId = checksum.substring(0, 12);
+    final total = max(1, (encoded.length / chunkSize).ceil());
+
+    return [
+      for (var index = 0; index < total; index++)
+        TradeQrChunk(
+          tradeId: tradeId,
+          index: index,
+          total: total,
+          checksum: checksum,
+          payload: encoded.substring(
+            index * chunkSize,
+            min(encoded.length, (index + 1) * chunkSize),
+          ),
+        ),
+    ];
   }
 
   Map<String, dynamic> toJson() {
@@ -3042,7 +3149,10 @@ class TradePackage {
     if (!data.startsWith(prefix)) {
       throw const FormatException('That QR code is not a WildDex trade.');
     }
-    final encoded = data.substring(prefix.length);
+    return fromEncodedPayload(data.substring(prefix.length));
+  }
+
+  static TradePackage fromEncodedPayload(String encoded) {
     final decoded = utf8.decode(base64Url.decode(encoded));
     final payload = jsonDecode(decoded) as Map<String, dynamic>;
     return TradePackage(
@@ -3050,6 +3160,110 @@ class TradePackage {
       capture:
           CritterCapture.fromJson(payload['capture'] as Map<String, dynamic>),
     );
+  }
+}
+
+class TradeQrChunk {
+  const TradeQrChunk({
+    required this.tradeId,
+    required this.index,
+    required this.total,
+    required this.checksum,
+    required this.payload,
+  });
+
+  final String tradeId;
+  final int index;
+  final int total;
+  final String checksum;
+  final String payload;
+
+  String get label => '${index + 1}/$total';
+
+  String toQrData() {
+    return '${TradePackage.chunkPrefix}$tradeId:$index:$total:$checksum:$payload';
+  }
+
+  static TradeQrChunk fromQrData(String data) {
+    if (!data.startsWith(TradePackage.chunkPrefix)) {
+      throw const FormatException('That QR code is not a WildDex trade chunk.');
+    }
+
+    final body = data.substring(TradePackage.chunkPrefix.length);
+    final parts = body.split(':');
+    if (parts.length != 5) {
+      throw const FormatException('WildDex trade chunk is malformed.');
+    }
+
+    final index = int.tryParse(parts[1]);
+    final total = int.tryParse(parts[2]);
+    if (index == null || total == null || index < 0 || total <= 0) {
+      throw const FormatException('WildDex trade chunk has bad numbering.');
+    }
+    if (index >= total) {
+      throw const FormatException('WildDex trade chunk index is out of range.');
+    }
+
+    return TradeQrChunk(
+      tradeId: parts[0],
+      index: index,
+      total: total,
+      checksum: parts[3],
+      payload: parts[4],
+    );
+  }
+}
+
+class TradeQrAssembler {
+  final Map<int, String> _parts = {};
+  String? _tradeId;
+  String? _checksum;
+  int? _total;
+
+  int get collected => _parts.length;
+
+  int get total => _total ?? 0;
+
+  String get progressLabel {
+    final expected = total;
+    if (expected == 0) return 'Scanning trade pieces...';
+    return 'Captured $collected of $expected trade pieces.';
+  }
+
+  TradePackage? addQrData(String data) {
+    if (data.startsWith(TradePackage.prefix)) {
+      return TradePackage.fromQrData(data);
+    }
+
+    final chunk = TradeQrChunk.fromQrData(data);
+    if (_tradeId != null && _tradeId != chunk.tradeId) {
+      reset();
+    }
+
+    _tradeId = chunk.tradeId;
+    _checksum = chunk.checksum;
+    _total = chunk.total;
+    _parts[chunk.index] = chunk.payload;
+
+    if (_parts.length != chunk.total) return null;
+
+    final encoded = [
+      for (var index = 0; index < chunk.total; index++) _parts[index] ?? '',
+    ].join();
+    final checksum = sha1.convert(utf8.encode(encoded)).toString();
+    if (checksum != _checksum) {
+      reset();
+      throw const FormatException('WildDex trade pieces did not match.');
+    }
+
+    return TradePackage.fromEncodedPayload(encoded);
+  }
+
+  void reset() {
+    _parts.clear();
+    _tradeId = null;
+    _checksum = null;
+    _total = null;
   }
 }
 

@@ -225,13 +225,15 @@ void main() {
       opponentPackage: decoded!,
     );
     final second = simulateBattle(
-      ownPackage: rabbitPackage,
-      opponentPackage: decoded,
+      ownPackage: decoded,
+      opponentPackage: rabbitPackage,
     );
 
     expect(decoded.battleId, 'battle-123');
     expect(first.statusLine, second.statusLine);
     expect(first.events, second.events);
+    expect(first.ownWon, isNot(second.ownWon));
+    expect(first.winnerCapturedLoser, second.winnerCapturedLoser);
   });
 
   testWidgets('WildDex renders scanner controls', (WidgetTester tester) async {

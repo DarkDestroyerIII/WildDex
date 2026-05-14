@@ -4189,6 +4189,7 @@ class BattleQrAssembler {
 class BattleResult {
   const BattleResult({
     required this.ownWon,
+    required this.winnerCapturedLoser,
     required this.stoleOpponent,
     required this.winnerName,
     required this.loserName,
@@ -4196,6 +4197,7 @@ class BattleResult {
   });
 
   final bool ownWon;
+  final bool winnerCapturedLoser;
   final bool stoleOpponent;
   final String winnerName;
   final String loserName;
@@ -4204,9 +4206,8 @@ class BattleResult {
   bool get ownLost => !ownWon;
 
   String get statusLine {
-    if (ownLost) return '$loserName lost the battle and was released.';
-    if (stoleOpponent) return '$winnerName won and captured $loserName.';
-    return '$winnerName won. $loserName escaped capture.';
+    if (winnerCapturedLoser) return '$winnerName won and captured $loserName.';
+    return '$winnerName won. $loserName was released after losing.';
   }
 }
 
@@ -4287,21 +4288,19 @@ BattleResult simulateBattle({
       identical(winner, participants[0]) ? participants[1] : participants[0];
   final ownWon = winner.isOwn;
   final stealChance = opponentStealChance(winner.stats, loser.stats);
-  final stoleOpponent = ownWon && rng.nextDouble() < stealChance;
+  final winnerCapturedLoser = rng.nextDouble() < stealChance;
+  final stoleOpponent = ownWon && winnerCapturedLoser;
 
   events.add('${winner.name} wins with ${winner.hp}/${winner.maxHp} HP.');
-  if (ownWon) {
-    events.add(
-      stoleOpponent
-          ? '${loser.name} was captured after the battle.'
-          : '${loser.name} escaped after the battle.',
-    );
-  } else {
-    events.add('${loser.name} was released after losing.');
-  }
+  events.add(
+    winnerCapturedLoser
+        ? '${winner.name} captured ${loser.name} after the battle.'
+        : '${loser.name} was released after losing.',
+  );
 
   return BattleResult(
     ownWon: ownWon,
+    winnerCapturedLoser: winnerCapturedLoser,
     stoleOpponent: stoleOpponent,
     winnerName: winner.name,
     loserName: loser.name,
@@ -4897,7 +4896,7 @@ int seedForBattle(BattlePackage first, BattlePackage second) {
     ...[first, second]
         .map(
           (package) =>
-              '${package.capture.id}:${package.capture.commonName}:${jsonEncode(package.capture.stats)}',
+              '${package.capture.id}:${package.capture.commonName}:${canonicalStatsText(package.capture.stats)}',
         )
         .toList()
       ..sort(),
@@ -4908,6 +4907,11 @@ int seedForBattle(BattlePackage first, BattlePackage second) {
     seed = ((seed << 8) | byte) & 0x7fffffff;
   }
   return seed == 0 ? 1 : seed;
+}
+
+String canonicalStatsText(Map<String, int> stats) {
+  final keys = stats.keys.toList()..sort();
+  return keys.map((key) => '$key=${stats[key]}').join(',');
 }
 
 class SeededRng {

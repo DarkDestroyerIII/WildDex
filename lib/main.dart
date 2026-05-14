@@ -2542,16 +2542,79 @@ class _FlashingBattleQrCodeState extends State<_FlashingBattleQrCode> {
   }
 }
 
-class _BattleResultPanel extends StatelessWidget {
+class _BattleResultPanel extends StatefulWidget {
   const _BattleResultPanel({required this.result});
 
   final BattleResult result;
 
   @override
+  State<_BattleResultPanel> createState() => _BattleResultPanelState();
+}
+
+class _BattleResultPanelState extends State<_BattleResultPanel> {
+  Timer? _timer;
+  int _frameIndex = 0;
+
+  BattleFrame get _frame => widget.result.frames[widget.result.frames.isEmpty
+      ? 0
+      : min(_frameIndex, widget.result.frames.length - 1)];
+
+  @override
+  void initState() {
+    super.initState();
+    _startPlayback();
+  }
+
+  @override
+  void didUpdateWidget(covariant _BattleResultPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.result, widget.result)) {
+      _startPlayback();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _startPlayback() {
+    _timer?.cancel();
+    _frameIndex = 0;
+    if (widget.result.frames.length > 1) {
+      _timer = Timer.periodic(const Duration(milliseconds: 900), (_) {
+        if (!mounted) return;
+        setState(() {
+          if (_frameIndex < widget.result.frames.length - 1) {
+            _frameIndex += 1;
+          } else {
+            _timer?.cancel();
+          }
+        });
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final frame = widget.result.frames.isEmpty
+        ? BattleFrame(
+            text: widget.result.statusLine,
+            ownHp: widget.result.ownMaxHp,
+            opponentHp: widget.result.opponentMaxHp,
+            actorIsOwn: true,
+            targetIsOwn: false,
+            kind: BattleFrameKind.finale,
+          )
+        : _frame;
+    final ownHit = frame.kind == BattleFrameKind.hit && frame.targetIsOwn;
+    final opponentHit = frame.kind == BattleFrameKind.hit && !frame.targetIsOwn;
+
     return DecoratedBox(
       decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        border: Border.all(color: colors.outlineVariant),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Padding(
@@ -2560,17 +2623,163 @@ class _BattleResultPanel extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              result.statusLine,
+              widget.result.statusLine,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.w800,
                   ),
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _BattleFighterCard(
+                    name: widget.result.ownName,
+                    hp: frame.ownHp,
+                    maxHp: widget.result.ownMaxHp,
+                    active: frame.actorIsOwn,
+                    hit: ownHit,
+                    alignRight: false,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'VS',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: colors.primary,
+                      ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _BattleFighterCard(
+                    name: widget.result.opponentName,
+                    hp: frame.opponentHp,
+                    maxHp: widget.result.opponentMaxHp,
+                    active: !frame.actorIsOwn,
+                    hit: opponentHit,
+                    alignRight: true,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: Text(
+                frame.text,
+                key: ValueKey('battle-frame-$_frameIndex-${frame.text}'),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ),
             const SizedBox(height: 8),
-            ...result.events.take(12).map((event) => Text(event)),
-            if (result.events.length > 12)
-              Text('...${result.events.length - 12} more turns'),
+            LinearProgressIndicator(
+              value: widget.result.frames.isEmpty
+                  ? 1
+                  : (_frameIndex + 1) / widget.result.frames.length,
+            ),
+            const SizedBox(height: 8),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              title: const Text('Battle log'),
+              children: widget.result.events
+                  .map(
+                    (event) => Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(event),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _BattleFighterCard extends StatelessWidget {
+  const _BattleFighterCard({
+    required this.name,
+    required this.hp,
+    required this.maxHp,
+    required this.active,
+    required this.hit,
+    required this.alignRight,
+  });
+
+  final String name;
+  final int hp;
+  final int maxHp;
+  final bool active;
+  final bool hit;
+  final bool alignRight;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final hpRatio = maxHp <= 0 ? 0.0 : (hp / maxHp).clamp(0.0, 1.0);
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: hit ? 1 : 0),
+      duration: const Duration(milliseconds: 260),
+      builder: (context, value, child) {
+        final offset = hit ? sin(value * pi * 8) * 5 : 0.0;
+        return Transform.translate(
+          offset: Offset(offset, 0),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: hit
+                  ? colors.errorContainer.withOpacity(0.82)
+                  : active
+                      ? colors.primaryContainer.withOpacity(0.82)
+                      : colors.surfaceContainerHighest.withOpacity(0.62),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: active ? colors.primary : colors.outlineVariant,
+                width: active ? 2 : 1,
+              ),
+            ),
+            child: child,
+          ),
+        );
+      },
+      child: Column(
+        crossAxisAlignment:
+            alignRight ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: hpRatio,
+              minHeight: 10,
+              backgroundColor: colors.surface,
+              color: hpRatio > 0.45
+                  ? colors.primary
+                  : hpRatio > 0.2
+                      ? colors.tertiary
+                      : colors.error,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text('$hp/$maxHp HP'),
+        ],
       ),
     );
   }
@@ -4202,6 +4411,11 @@ class BattleResult {
     required this.winnerName,
     required this.loserName,
     required this.events,
+    required this.frames,
+    required this.ownName,
+    required this.opponentName,
+    required this.ownMaxHp,
+    required this.opponentMaxHp,
   });
 
   final bool ownWon;
@@ -4210,6 +4424,11 @@ class BattleResult {
   final String winnerName;
   final String loserName;
   final List<String> events;
+  final List<BattleFrame> frames;
+  final String ownName;
+  final String opponentName;
+  final int ownMaxHp;
+  final int opponentMaxHp;
 
   bool get ownLost => !ownWon;
 
@@ -4218,6 +4437,28 @@ class BattleResult {
     return '$winnerName won. $loserName was released after losing.';
   }
 }
+
+class BattleFrame {
+  const BattleFrame({
+    required this.text,
+    required this.ownHp,
+    required this.opponentHp,
+    required this.actorIsOwn,
+    required this.targetIsOwn,
+    required this.kind,
+    this.damage = 0,
+  });
+
+  final String text;
+  final int ownHp;
+  final int opponentHp;
+  final bool actorIsOwn;
+  final bool targetIsOwn;
+  final BattleFrameKind kind;
+  final int damage;
+}
+
+enum BattleFrameKind { wait, dodge, hit, finale }
 
 class BattleParticipant {
   BattleParticipant({
@@ -4247,6 +4488,29 @@ BattleResult simulateBattle({
 
   final rng = SeededRng(seedForBattle(ownPackage, opponentPackage));
   final events = <String>[];
+  final frames = <BattleFrame>[];
+
+  void addFrame(
+    String text, {
+    required BattleParticipant actor,
+    required BattleParticipant target,
+    required BattleFrameKind kind,
+    int damage = 0,
+  }) {
+    events.add(text);
+    frames.add(
+      BattleFrame(
+        text: text,
+        ownHp: participants.firstWhere((participant) => participant.isOwn).hp,
+        opponentHp:
+            participants.firstWhere((participant) => !participant.isOwn).hp,
+        actorIsOwn: actor.isOwn,
+        targetIsOwn: target.isOwn,
+        kind: kind,
+        damage: damage,
+      ),
+    );
+  }
 
   for (var round = 1; round <= 60; round++) {
     if (participants.any((participant) => participant.hp <= 0)) break;
@@ -4266,13 +4530,23 @@ BattleResult simulateBattle({
       if (attacker.hp <= 0 || defender.hp <= 0) continue;
 
       if (rng.nextDouble() > attackChance(attacker.stats)) {
-        events.add('Round $round: ${attacker.name} watches for an opening.');
+        addFrame(
+          'Round $round: ${attacker.name} watches for an opening.',
+          actor: attacker,
+          target: defender,
+          kind: BattleFrameKind.wait,
+        );
         continue;
       }
 
       final dodge = dodgeChance(defender.stats, attacker.stats);
       if (rng.nextDouble() < dodge) {
-        events.add('Round $round: ${defender.name} dodges ${attacker.name}.');
+        addFrame(
+          'Round $round: ${defender.name} dodges ${attacker.name}.',
+          actor: defender,
+          target: attacker,
+          kind: BattleFrameKind.dodge,
+        );
         continue;
       }
 
@@ -4280,8 +4554,12 @@ BattleResult simulateBattle({
       final crit = rng.nextDouble() < critChance(attacker.stats);
       if (crit) damage = (damage * 1.55).round();
       defender.hp = max(0, defender.hp - damage);
-      events.add(
+      addFrame(
         'Round $round: ${attacker.name} hits ${defender.name} for $damage${crit ? ' critical' : ''}.',
+        actor: attacker,
+        target: defender,
+        kind: BattleFrameKind.hit,
+        damage: damage,
       );
     }
   }
@@ -4299,11 +4577,20 @@ BattleResult simulateBattle({
   final winnerCapturedLoser = rng.nextDouble() < stealChance;
   final stoleOpponent = ownWon && winnerCapturedLoser;
 
-  events.add('${winner.name} wins with ${winner.hp}/${winner.maxHp} HP.');
-  events.add(
+  final winText = '${winner.name} wins with ${winner.hp}/${winner.maxHp} HP.';
+  addFrame(
+    winText,
+    actor: winner,
+    target: loser,
+    kind: BattleFrameKind.finale,
+  );
+  addFrame(
     winnerCapturedLoser
         ? '${winner.name} captured ${loser.name} after the battle.'
         : '${loser.name} was released after losing.',
+    actor: winner,
+    target: loser,
+    kind: BattleFrameKind.finale,
   );
 
   return BattleResult(
@@ -4313,6 +4600,11 @@ BattleResult simulateBattle({
     winnerName: winner.name,
     loserName: loser.name,
     events: events,
+    frames: frames,
+    ownName: ownPackage.capture.commonName,
+    opponentName: opponentPackage.capture.commonName,
+    ownMaxHp: battleMaxHp(ownPackage.capture.stats),
+    opponentMaxHp: battleMaxHp(opponentPackage.capture.stats),
   );
 }
 

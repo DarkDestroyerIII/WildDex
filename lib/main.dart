@@ -3745,40 +3745,48 @@ Keep stats stable for the biological animal, not the individual photo. If the sa
 class WikipediaImageService {
   Future<WikiImage?> findImage(String commonName, String scientificName) async {
     for (final title in [commonName, scientificName]) {
-      final image = await _summaryImage(title);
-      if (image != null) return image;
+      try {
+        final image = await _summaryImage(title);
+        if (image != null) return image;
+      } catch (_) {
+        continue;
+      }
     }
     return null;
   }
 
   Future<WikiImage?> _summaryImage(String title) async {
-    final normalized = title.trim().replaceAll(' ', '_');
-    if (normalized.isEmpty) return null;
+    try {
+      final normalized = title.trim().replaceAll(' ', '_');
+      if (normalized.isEmpty) return null;
 
-    final uri = Uri.parse(
-      'https://en.wikipedia.org/api/rest_v1/page/summary/'
-      '${Uri.encodeComponent(normalized)}',
-    );
+      final uri = Uri.parse(
+        'https://en.wikipedia.org/api/rest_v1/page/summary/'
+        '${Uri.encodeComponent(normalized)}',
+      );
 
-    final response = await http.get(
-      uri,
-      headers: const {
-        'User-Agent': 'WildDex personal Flutter app (local development)',
-      },
-    ).timeout(const Duration(seconds: 15));
+      final response = await http.get(
+        uri,
+        headers: const {
+          'User-Agent': 'WildDex personal Flutter app (local development)',
+        },
+      ).timeout(const Duration(seconds: 15));
 
-    if (response.statusCode < 200 || response.statusCode >= 300) return null;
+      if (response.statusCode < 200 || response.statusCode >= 300) return null;
 
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final thumbnail = data['thumbnail'];
-    if (thumbnail is! Map<String, dynamic>) return null;
-    final source = thumbnail['source'];
-    if (source is! String || source.isEmpty) return null;
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final thumbnail = data['thumbnail'];
+      if (thumbnail is! Map<String, dynamic>) return null;
+      final source = thumbnail['source'];
+      if (source is! String || source.isEmpty) return null;
 
-    return WikiImage(
-      title: (data['title'] as String?) ?? title,
-      imageUrl: source,
-    );
+      return WikiImage(
+        title: (data['title'] as String?) ?? title,
+        imageUrl: source,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }
 
@@ -4998,6 +5006,9 @@ String friendlyErrorMessage(Object error) {
   final text = error.toString();
   if (text.contains('SocketException') || text.contains('Failed host lookup')) {
     return 'Network connection failed. Check signal or Wi-Fi and try again.';
+  }
+  if (text.contains('ClientException') || text.contains('Failed to fetch')) {
+    return 'A web request failed. Check signal or Wi-Fi and try again.';
   }
   if (text.contains('TimeoutException')) {
     return 'OpenAI took too long to respond. Try again in a moment.';
